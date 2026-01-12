@@ -1,0 +1,57 @@
+# Core Framework
+flask==3.0.0
+flask-cors==4.0.0
+flask-socketio==5.3.6
+gunicorn==21.2.0
+gevent==23.9.1
+gevent-websocket==0.10.1
+
+# Database
+sqlalchemy==2.0.23
+psycopg2-binary==2.9.9
+alembic==1.13.0
+pgvector==0.2.4
+
+# LangChain & AI
+langchain>=0.2.0,<0.3
+langchain-core>=0.2.40,<0.3
+langchain-openai>=0.1.25,<0.2
+langchain-community>=0.2.0,<0.3
+langgraph>=0.2.0,<0.3
+langsmith>=0.1.147,<0.2
+openai>=1.10.0,<2.0.0
+
+# Vector Store & Embeddings
+tiktoken>=0.7,<1
+sentence-transformers==2.2.2
+
+# Redis for caching and pub/sub
+redis==5.0.1
+
+# Document Processing
+pypdf==3.17.4
+pymupdf==1.24.10
+python-docx==1.1.0
+openpyxl==3.1.2
+beautifulsoup4==4.12.2
+markdown==3.5.1
+xhtml2pdf==0.2.16
+
+# Utilities
+python-dotenv==1.0.0
+pydantic==2.5.3
+pydantic-settings==2.1.0
+python-dateutil==2.8.2
+pytz==2023.3.post1
+uuid==1.30
+
+# Security
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+
+# Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+
+# Logging & Monitoring
+structlog==23.2.0
