@@ -12,10 +12,10 @@ from app.agents.base import BaseAgent, AgentState, AgentResponse
 from app.models.database import db_session, Conversation
 from app.services.calendar_service import (
     create_calendar_event_details,
-    add_calendar_event_attendees,
     has_calendar_conflict,
     CalendarSendError,
 )
+from app.services.email_sender import send_email, EmailSendError
 from app.config import settings
 
 
@@ -113,7 +113,13 @@ If the user asks to book an event:
         if pending or schedule_intent or has_history:
             details = pending.copy() if pending else {}
             details = self._merge_missing_details(details, history_details)
+            prev_date = details.get("date")
+            prev_time = details.get("time")
+            prev_duration = int(details.get("duration_minutes") or 60)
             details = self._apply_extracted_fields(details, task_text, overwrite=True)
+            if self._time_fields_changed(details, prev_date, prev_time, prev_duration):
+                details.pop("availability_checked", None)
+                details.pop("confirmation_snapshot", None)
             if email:
                 details["attendee_email"] = email
                 details["attendee_email_source"] = "user"
@@ -143,6 +149,53 @@ If the user asks to book an event:
                         message=f"Please provide the {', '.join(missing)}.",
                         clarification_question="What details should I use?"
                     )
+                availability = details.get("availability_checked")
+                if availability and availability.get("status") == "conflict":
+                    return AgentResponse(
+                        agent_name=self.name,
+                        status='needs_clarification',
+                        message="That time conflicts with an existing event. Please choose another date or time.",
+                        clarification_question="What date and time should I book instead?"
+                    )
+                if not availability:
+                    try:
+                        start_dt, end_dt = self._build_event_times(details)
+                        if has_calendar_conflict(
+                            start_dt.isoformat(),
+                            end_dt.isoformat(),
+                            settings.GOOGLE_CALENDAR_TIMEZONE
+                        ):
+                            details["availability_checked"] = {
+                                "date": details.get("date"),
+                                "time": details.get("time"),
+                                "duration_minutes": int(details.get("duration_minutes") or 60),
+                                "status": "conflict",
+                                "checked_at": datetime.utcnow().isoformat(),
+                            }
+                            self._set_pending_event(conversation_id, details)
+                            return AgentResponse(
+                                agent_name=self.name,
+                                status='needs_clarification',
+                                message="That time conflicts with an existing event. Please choose another date or time.",
+                                clarification_question="What date and time should I book instead?"
+                            )
+                        details["availability_checked"] = {
+                            "date": details.get("date"),
+                            "time": details.get("time"),
+                            "duration_minutes": int(details.get("duration_minutes") or 60),
+                            "status": "clear",
+                            "checked_at": datetime.utcnow().isoformat(),
+                        }
+                        self._set_pending_event(conversation_id, details)
+                    except CalendarSendError as exc:
+                        return AgentResponse(
+                            agent_name=self.name,
+                            status='error',
+                            message=f"I couldn't check calendar availability: {exc}",
+                            data={'action': 'schedule', 'error': str(exc)}
+                        )
+                    except ValueError:
+                        pass
                 return self._send_pending_event(conversation_id, details)
 
             if missing:
@@ -155,7 +208,22 @@ If the user asks to book an event:
 
             try:
                 start_dt, end_dt = self._build_event_times(details)
+                if self._availability_check_is_fresh(details):
+                    return AgentResponse(
+                        agent_name=self.name,
+                        status='needs_clarification',
+                        message=self._build_confirmation_message(details),
+                        clarification_question='Confirm booking?'
+                    )
                 if has_calendar_conflict(start_dt.isoformat(), end_dt.isoformat(), settings.GOOGLE_CALENDAR_TIMEZONE):
+                    details["availability_checked"] = {
+                        "date": details.get("date"),
+                        "time": details.get("time"),
+                        "duration_minutes": int(details.get("duration_minutes") or 60),
+                        "status": "conflict",
+                        "checked_at": datetime.utcnow().isoformat(),
+                    }
+                    details.pop("confirmation_snapshot", None)
                     self._set_pending_event(conversation_id, details)
                     return AgentResponse(
                         agent_name=self.name,
@@ -163,6 +231,21 @@ If the user asks to book an event:
                         message="That time conflicts with an existing event. Please choose another date or time.",
                         clarification_question="What date and time should I book instead?"
                     )
+                details["availability_checked"] = {
+                    "date": details.get("date"),
+                    "time": details.get("time"),
+                    "duration_minutes": int(details.get("duration_minutes") or 60),
+                    "status": "clear",
+                    "checked_at": datetime.utcnow().isoformat(),
+                }
+                details["confirmation_snapshot"] = {
+                    "date": details.get("date"),
+                    "time": details.get("time"),
+                    "duration_minutes": int(details.get("duration_minutes") or 60),
+                    "status": "clear",
+                    "checked_at": datetime.utcnow().isoformat(),
+                }
+                self._set_pending_event(conversation_id, details)
             except CalendarSendError as exc:
                 return AgentResponse(
                     agent_name=self.name,
@@ -294,6 +377,7 @@ Only ask for attendee names when a name is provided without an email.
         if not text:
             return None
         non_name_terms = {
+            "am",
             "meeting",
             "sync",
             "kickoff",
@@ -301,6 +385,7 @@ Only ask for attendee names when a name is provided without an email.
             "standup",
             "retro",
             "planning",
+            "pm",
             "demo",
             "update",
             "check-in",
@@ -574,7 +659,11 @@ Only ask for attendee names when a name is provided without an email.
         ]
         for pattern in pair_patterns:
             for name, email in re.findall(pattern, text, flags=re.IGNORECASE):
-                attendees.append({"name": name.strip(), "email": email.strip()})
+                cleaned_name = self._normalize_attendee_name(name)
+                if cleaned_name:
+                    attendees.append({"name": cleaned_name, "email": email.strip()})
+                else:
+                    attendees.append({"email": email.strip()})
 
         name_phrase = re.search(
             r"(?:his name is|her name is|their name is|name is)\s+([^,.;\n]+)",
@@ -684,6 +773,63 @@ Only ask for attendee names when a name is provided without an email.
             missing.append(f"attendee email for {label}")
         return missing
 
+    def _time_fields_changed(
+        self,
+        details: Dict[str, Any],
+        prev_date: Optional[str],
+        prev_time: Optional[str],
+        prev_duration: int
+    ) -> bool:
+        return (
+            details.get("date") != prev_date
+            or details.get("time") != prev_time
+            or int(details.get("duration_minutes") or 60) != prev_duration
+        )
+
+    def _availability_check_is_fresh(self, details: Dict[str, Any], ttl_minutes: int = 5) -> bool:
+        check = details.get("availability_checked")
+        if not check:
+            return False
+        if check.get("date") != details.get("date"):
+            return False
+        if check.get("time") != details.get("time"):
+            return False
+        if int(check.get("duration_minutes") or 60) != int(details.get("duration_minutes") or 60):
+            return False
+        checked_at = check.get("checked_at")
+        if not checked_at:
+            return False
+        try:
+            checked_dt = datetime.fromisoformat(checked_at)
+        except ValueError:
+            return False
+        return datetime.utcnow() - checked_dt <= timedelta(minutes=ttl_minutes)
+
+    def _confirmation_snapshot_is_valid(self, details: Dict[str, Any]) -> bool:
+        snapshot = details.get("confirmation_snapshot")
+        if not snapshot:
+            return False
+        if snapshot.get("status") != "clear":
+            return False
+        if snapshot.get("date") != details.get("date"):
+            return False
+        if snapshot.get("time") != details.get("time"):
+            return False
+        if int(snapshot.get("duration_minutes") or 60) != int(details.get("duration_minutes") or 60):
+            return False
+        return True
+
+    def _normalize_attendee_name(self, name: Optional[str]) -> Optional[str]:
+        if not name:
+            return None
+        tokens = [token for token in name.strip().split() if token]
+        if not tokens:
+            return None
+        if tokens[0].lower() in {"am", "pm"}:
+            tokens = tokens[1:]
+        cleaned = " ".join(tokens).strip()
+        return cleaned or None
+
     def _format_attendees_for_user(self, attendees: list[Dict[str, Any]]) -> str:
         formatted = []
         for attendee in attendees or []:
@@ -692,11 +838,12 @@ Only ask for attendee names when a name is provided without an email.
             if not name and not email:
                 continue
             if name and email:
-                formatted.append(f"{name} <{email}>")
+                cleaned = self._normalize_attendee_name(name)
+                formatted.append(f"{cleaned or name} <{email}>")
             elif email:
                 formatted.append(email)
             else:
-                formatted.append(name)
+                formatted.append(self._normalize_attendee_name(name) or name)
         return ", ".join(formatted) if formatted else "None"
 
     def _build_confirmation_message(self, details: Dict[str, Any]) -> str:
@@ -774,39 +921,53 @@ Only ask for attendee names when a name is provided without an email.
                     "timeZone": settings.GOOGLE_CALENDAR_TIMEZONE,
                 },
             }
+            event["conferenceData"] = {
+                "createRequest": {
+                    "requestId": uuid.uuid4().hex,
+                    "conferenceSolutionKey": {"type": "hangoutsMeet"},
+                }
+            }
             attendees = details.get("attendees") or []
             if not attendees:
                 attendee_email = details.get("attendee_email")
                 attendee_name = details.get("attendee_name")
                 if attendee_email:
                     attendees = [{"email": attendee_email, "name": attendee_name}]
-            attendees_payload = []
-            for att in attendees:
-                email = att.get("email")
-                if not email:
-                    continue
-                entry = {"email": email}
-                if att.get("name"):
-                    entry["displayName"] = att.get("name")
-                attendees_payload.append(entry)
 
-            if has_calendar_conflict(start_dt.isoformat(), end_dt.isoformat(), settings.GOOGLE_CALENDAR_TIMEZONE):
-                self._set_pending_event(conversation_id, details)
-                return AgentResponse(
-                    agent_name=self.name,
-                    status='needs_clarification',
-                    message="That time conflicts with an existing event. Please choose another date or time.",
-                    clarification_question="What date and time should I book instead?"
-                )
-
-            booking_details = create_calendar_event_details(event, send_updates="none")
+            booking_details = create_calendar_event_details(
+                event,
+                send_updates="none",
+                conference_data_version=1,
+            )
             link = booking_details.get("htmlLink", "")
-            invite_error = None
-            if attendees_payload:
-                try:
-                    add_calendar_event_attendees(booking_details.get("id", ""), attendees_payload)
-                except CalendarSendError as exc:
-                    invite_error = str(exc)
+            meet_link = booking_details.get("meetLink", "")
+            email_failures: list[str] = []
+            if attendees:
+                title = details.get("title", "Meeting")
+                when = f"{details.get('date')} {details.get('time')} ({settings.GOOGLE_CALENDAR_TIMEZONE})"
+                attendees_text = self._format_attendees_for_user(attendees)
+                lines = [
+                    f"Title: {title}",
+                    f"When: {when}",
+                ]
+                if meet_link:
+                    lines.append(f"Google Meet: {meet_link}")
+                if details.get("location"):
+                    lines.append(f"Location: {details.get('location')}")
+                if attendees_text and attendees_text != "None":
+                    lines.append(f"Attendees: {attendees_text}")
+                lines.append("")
+                lines.append("This invite was sent by Chief of Staff.")
+                body = "\n".join(lines)
+                subject = f"Meeting Invite: {title}"
+                for attendee in attendees:
+                    email = attendee.get("email")
+                    if not email:
+                        continue
+                    try:
+                        send_email(email, subject, body, to_name=attendee.get("name"))
+                    except EmailSendError as exc:
+                        email_failures.append(f"{email} ({exc})")
         except CalendarSendError as exc:
             return AgentResponse(
                 agent_name=self.name,
@@ -825,11 +986,13 @@ Only ask for attendee names when a name is provided without an email.
 
         self._clear_pending_event(conversation_id)
         response = "Event created on your Google Calendar."
-        if attendees_payload:
-            if invite_error:
-                response += f" I couldn't send the invites: {invite_error}."
+        if meet_link:
+            response += f" Google Meet link: {meet_link}."
+        if attendees:
+            if email_failures:
+                response += f" I couldn't send the invite to: {', '.join(email_failures)}."
             else:
-                response += " Invites sent to attendees."
+                response += " Invitations sent via email."
         if link:
             response += f" [Open event]({link})."
         return AgentResponse(
