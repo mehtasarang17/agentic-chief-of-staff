@@ -48,6 +48,13 @@ class Settings(BaseSettings):
     SMTP_USE_TLS: bool = True
     SMTP_USE_SSL: bool = False
 
+    # Google Calendar
+    GOOGLE_CALENDAR_CLIENT_ID: str = ""
+    GOOGLE_CALENDAR_CLIENT_SECRET: str = ""
+    GOOGLE_CALENDAR_REFRESH_TOKEN: str = ""
+    GOOGLE_CALENDAR_ID: str = "primary"
+    GOOGLE_CALENDAR_TIMEZONE: str = "UTC"
+
     class Config:
         env_file = ".env"
         case_sensitive = True

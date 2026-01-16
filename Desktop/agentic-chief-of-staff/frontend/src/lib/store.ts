@@ -9,6 +9,7 @@ export interface Message {
   thoughts?: string[]
   toolCalls?: any[]
   sources?: any[]
+  agentSteps?: any[]
   timestamp: Date
   isStreaming?: boolean
 }

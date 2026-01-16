@@ -18,6 +18,7 @@ export interface ChatResponse {
   needs_clarification: boolean
   clarification_question?: string
   sources: any[]
+  all_results?: any[]
 }
 
 export interface ConversationResponse {

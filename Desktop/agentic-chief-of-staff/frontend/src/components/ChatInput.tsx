@@ -74,6 +74,7 @@ export default function ChatInput() {
         thoughts: response.thoughts,
         toolCalls: response.tool_calls,
         sources: response.sources,
+        agentSteps: response.all_results,
         timestamp: new Date(),
       })
     } catch (error) {

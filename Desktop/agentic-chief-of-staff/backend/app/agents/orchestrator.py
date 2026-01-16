@@ -1,10 +1,12 @@
 """Master Orchestrator Agent - The Chief of Staff that delegates to specialized agents."""
 import json
+import uuid
 from typing import Dict, Any, List, Optional
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
 from app.agents.base import BaseAgent, AgentState, AgentResponse
 from app.config import settings
+from app.models.database import db_session, Conversation
 
 
 class MasterOrchestrator(BaseAgent):
@@ -75,7 +77,7 @@ Response Format (JSON):
 
         self.agent_registry: Dict[str, Dict[str, Any]] = {
             "calendar": {
-                "keywords": ["schedule", "meeting", "appointment", "calendar", "event", "time", "book", "reschedule", "availability", "remind"],
+                "keywords": ["schedule", "meeting", "appointment", "calendar", "event", "time", "book", "reschedule", "availability", "remind", "invite", "invitation"],
                 "description": "Manages schedules and calendar events"
             },
             "email": {
@@ -102,6 +104,37 @@ Response Format (JSON):
 
     async def process(self, state: AgentState) -> AgentResponse:
         """Process user request and determine delegations."""
+        conversation_id = state.get('conversation_id')
+        if conversation_id:
+            session = db_session()
+            try:
+                conversation = session.query(Conversation).filter(
+                    Conversation.id == uuid.UUID(conversation_id)
+                ).first()
+                pending_event = None
+                if conversation and conversation.metadata_:
+                    pending_event = conversation.metadata_.get("pending_event")
+                if pending_event:
+                    return AgentResponse(
+                        agent_name=self.name,
+                        status='delegated',
+                        message="Continuing the pending calendar request.",
+                        next_agent='calendar',
+                        data={'pending_event': True}
+                    )
+            finally:
+                session.close()
+
+        task_lower = (state.get('task') or '').lower()
+        calendar_keywords = self.agent_registry.get("calendar", {}).get("keywords", [])
+        if any(keyword in task_lower for keyword in calendar_keywords):
+            return AgentResponse(
+                agent_name=self.name,
+                status='delegated',
+                message="Routing to calendar manager.",
+                next_agent='calendar',
+                data={'decision': {'delegations': [{'agent': 'CALENDAR', 'task': state.get('task', '')}]}}
+            )
 
         # Build context from state
         context = self._build_context(state)

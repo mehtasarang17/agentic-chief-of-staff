@@ -146,6 +146,7 @@ def _update_state_with_response(state: AgentState, response: AgentResponse, agen
         'summary': response.message[:200]
     })
 
+    needs_clarification = response.status == 'needs_clarification'
     return {
         **state,
         'messages': state['messages'] + [new_message],
@@ -153,6 +154,8 @@ def _update_state_with_response(state: AgentState, response: AgentResponse, agen
         'results': new_results,
         'next_agent': response.next_agent,
         'should_continue': response.next_agent is not None,
+        'user_clarification_needed': needs_clarification,
+        'clarification_question': response.clarification_question,
         'iteration_count': state.get('iteration_count', 0) + 1
     }
 
@@ -181,6 +184,9 @@ def route_after_worker(state: AgentState) -> str:
     # Check iteration limit
     if state.get('iteration_count', 0) >= settings.MAX_AGENT_ITERATIONS:
         return 'synthesizer'
+
+    if state.get('user_clarification_needed'):
+        return END
 
     # PDF export should end the workflow immediately
     if state.get('current_agent') == 'pdf':

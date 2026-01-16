@@ -93,7 +93,7 @@ export default function ChatMessage({ message, isLast }: ChatMessageProps) {
         </div>
 
         {/* Agent Details */}
-        {!isUser && (message.thoughts?.length || message.toolCalls?.length || message.sources?.length) && (
+        {!isUser && (message.thoughts?.length || message.toolCalls?.length || message.sources?.length || message.agentSteps?.length) && (
           <div className="mt-2">
             <button
               onClick={() => setShowDetails(!showDetails)}
@@ -181,6 +181,38 @@ export default function ChatMessage({ message, isLast }: ChatMessageProps) {
                                 {i + 1}
                               </span>
                               {source.filename || source.document_id || 'Document'}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Agent Steps */}
+                    {message.agentSteps && message.agentSteps.length > 0 && (
+                      <div>
+                        <h4 className="text-xs font-medium text-dark-300 mb-1 flex items-center gap-1">
+                          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                          </svg>
+                          Agent Steps
+                        </h4>
+                        <div className="space-y-2">
+                          {message.agentSteps.map((step, i) => (
+                            <div key={i} className="rounded-md bg-dark-800/50 p-2 text-xs text-dark-300">
+                              <div className="flex items-center justify-between">
+                                <span className="font-medium text-white">
+                                  {formatAgentName(step.agent_name || step.agent || 'agent')}
+                                </span>
+                                <span className="text-[10px] uppercase tracking-wide text-dark-400">
+                                  {step.status || 'done'}
+                                </span>
+                              </div>
+                              {step.summary && (
+                                <p className="mt-1 text-dark-400">{step.summary}</p>
+                              )}
+                              {!step.summary && step.message && (
+                                <p className="mt-1 text-dark-400">{step.message}</p>
+                              )}
                             </div>
                           ))}
                         </div>
